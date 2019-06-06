@@ -323,58 +323,48 @@ einval:
 }
 
 
-static union json_h_value *
-json_h_parse_(struct json_h_context *ctx, char *buf, size_t n)
+static int
+json_h_parse_(struct json_h_context *ctx, char *buf, size_t n, union json_h_value *value)
 {
-	union json_h_value value, *ret, *newarray;
+	union json_h_value *newarray;
 	int r, size = 0;
 
-	r = json_h_next(ctx, buf, n, &value);
+	r = json_h_next(ctx, buf, n, value);
 	if (r < 0)
-		return NULL;
+		return -1;
 	if (!r) {
 		errno = EINVAL;
-		return NULL;
+		return -1;
 	}
 
-	ret = malloc(sizeof(*ret));
-	if (!ret)
-		return NULL;
-
-	if (value.type == JSON_H_OBJECT_START || value.type == JSON_H_ARRAY_START) {
-		ret->type = JSON_H_ARRAY;
-		ret->array.values = NULL;
-		ret->array.n = 0;
-		for (;;) {
-			if (ret->array.n == size) {
+	if (value->type == JSON_H_OBJECT_START || value->type == JSON_H_ARRAY_START) {
+		value->array.values = NULL;
+		for (value->array.n = 0;; value->array.n++) {
+			if (value->array.n == size) {
 				size += 16;
-				newarray = realloc(ret->array.values, size * sizeof(*ret->array.values));
+				newarray = realloc(value->array.values, size * sizeof(*value->array.values));
 				if (!newarray) {
-					json_h_free(ret);
-					return NULL;
+					json_h_free(value);
+					return -1;
 				}
-				ret->array.values = newarray;
+				value->array.values = newarray;
 			}
-			r = json_h_next(ctx, buf, n, &ret->array.values[ret->array.n]);
-			if (r <= 0) {
-				json_h_free(ret);
-				return NULL;
+			if (json_h_parse_(ctx, buf, n, &value->array.values[value->array.n])) {
+				json_h_destroy(value);
+				return -1;
 			}
-			if (ret->array.values[ret->array.n].type == JSON_H_OBJECT_END)
+			if (value->array.values[value->array.n].type == JSON_H_OBJECT_END) {
+				value->array.n /= 2;
+				value->type = JSON_H_OBJECT;
 				break;
-			if (ret->array.values[ret->array.n].type == JSON_H_ARRAY_END)
+			} else if (value->array.values[value->array.n].type == JSON_H_ARRAY_END) {
+				value->type = JSON_H_ARRAY;
 				break;
-			ret->array.n += 1;
+			}
 		}
-		if (value.type == JSON_H_OBJECT_START) {
-			ret->array.n /= 2;
-			ret->type = JSON_H_OBJECT;
-		}
-	} else {
-		*ret = value;
 	}
 
-	return ret;
+	return 0;
 }
 
 
@@ -385,9 +375,14 @@ json_h_parse(char *buf, size_t n)
 	union json_h_value value, *ret;
 	int r;
 
-	ret = json_h_parse_(&ctx, buf, n);
+	ret = malloc(sizeof(*ret));
 	if (!ret)
 		return NULL;
+
+	if (json_h_parse_(&ctx, buf, n, ret)) {
+		free(ret);
+		return NULL;
+	}
 
 	r = json_h_next(&ctx, buf, n, &value);
 	if (r < 0) {
